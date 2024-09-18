@@ -24,7 +24,7 @@ const sensorRef = ref(database, 'Sensors/sensor123'); // Update to your specific
 onValue(sensorRef, (snapshot) => {
   const data = snapshot.val();
   if (data) {
-    document.getElementById('humidity').textContent = `Humidity: ${data.Humidity}`;
-    document.getElementById('temperature').textContent = `Temperature: ${data.Temperature}`;
+    document.getElementById('humidity').innerHTML = `${data.Humidity}%`;
+    document.getElementById('temperature').innerHTML = `${data.Temperature}&deg;C `;
   }
 });

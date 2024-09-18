@@ -3,17 +3,75 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Sensor Data Dashboard</title>
+    <title>Aircraft Cabin Monitoring System</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
-    <div class="container">
-        <h1>Sensor Data</h1>
-        <p id="humidity">Humidity: </p>
-        <p id="temperature">Temperature: </p>
+
+    <div class="header">
+        <div class="logo">
+            <img src="vectors/Asset 5-8.png" alt="Description of the image">
+            AeroSensor
+        </div>
     </div>
+ 
+<!-- 1ST ROW -->
+
+    <div class="rows">
+        <div class="cards">
+            Cabin Temperature
+        <div class="value" id="temperature"></div>  
+
+        </div>      
+
+        <div class="cards">
+            CO2 Concentration
+        <div class="value" > 400 ppm </div>  
+        
+        </div>    
+    </div>
+   
+<!-- 2nd ROW -->
+    <div class="rows">
+        <div class="cards">
+            Cabin Humidity
+        <div class="value" id="humidity"></div>  
+
+        </div> 
+
+        <div class="cards">
+            PM2 Concentration
+        <div class="value" > 12 µg/m³</div>  
+        
+        </div>   
+    </div>
+
+<!-- 3rd ROW -->
+    <div class="rows">
+        <div class="cards">
+            Cabin Pressure
+        <div class="value" > 10013hPA</div>  
+
+        </div> 
+
+        <div class="cards">
+            O2 Concentration
+        <div class="value" > 21% O2</div>  
+        
+        </div>   
+    </div>
+
+
+    <div class="footer">
+        Aircraft Monitoring System
+    </div>
+
+
 
     <!-- Firebase Scripts -->
     <script type="module" src="script.js"></script>
 </body>
 </html>
+
+
+<!-- <p id="temperature">Temperature: </p> -->
