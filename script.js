@@ -2,6 +2,8 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.13.1/firebase-app.js";
 import { getDatabase, ref, onValue } from "https://www.gstatic.com/firebasejs/10.13.1/firebase-database.js";
 
+
+
 // Your web app's Firebase configuration
 const firebaseConfig = {
   apiKey: "AIzaSyBK2pCmtWpVd0L4Y4DWuEvJ1dGi4ByIz4s",
@@ -26,5 +28,6 @@ onValue(sensorRef, (snapshot) => {
   if (data) {
     document.getElementById('humidity').innerHTML = `${data.Humidity}%`;
     document.getElementById('temperature').innerHTML = `${data.Temperature}&deg;C `;
+  
   }
 });
