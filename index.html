@@ -4,8 +4,11 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Aircraft Cabin Monitoring System</title>
+   
     <link rel="stylesheet" href="style.css" />
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script type="module" src="firebase.js"></script>
+    <script type="module" src="chart.js"></script>
   </head>
   <body>
     <div class="header">
@@ -19,7 +22,7 @@
     <div class="rows">
       <div class="cards">
         Cabin Temperature
-        <div class="value" id="temperature"></div>
+        <div class="value" id="temperatureData"></div>
       </div>
 
       <div class="cards">
@@ -32,12 +35,12 @@
     <div class="rows">
       <div class="cards">
         Cabin Humidity
-        <div class="value" id="humidity"></div>
+        <div class="value" id="humidityData"></div>
       </div>
 
       <div class="cards">
         Ultrasonic Sensor
-        <div class="value" id="ultrasonic"></div>
+        <div class="value" id="proximityData"></div>
       </div>
     </div>
 
@@ -61,7 +64,8 @@
 
     <div class="footer">Aircraft Monitoring System</div>
 
-    <!-- Firebase Scripts -->
-    <script type="module" src="script.js"></script>
+    
+
+    
   </body>
 </html>
