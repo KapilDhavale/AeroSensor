@@ -114,6 +114,7 @@ img {
 }
 
 .chart-container {
+  width:1000px;
   margin: 20px;
   padding: 20px;
   background-color: #222; /* Dark background for contrast */
@@ -122,6 +123,6 @@ img {
 }
 
 #ultrasonicChart {
-  max-width: 100%; /* Make sure the chart is responsive */
-  height: auto; /* Adjust height automatically */
+  max-width: 1000px; /* Make sure the chart is responsive */
+  height: 100px; /* Adjust height automatically */
 }
