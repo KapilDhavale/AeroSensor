@@ -1,9 +1,6 @@
-// chart.js
-
-// Import the listenToSensorData function from firebase.js
 import { listenToSensorData } from './firebase.js';
 
-// Function to initialize the chart
+
 function initializeChart() {
     const ctx = document.getElementById("ultrasonicChart").getContext("2d");
     const ultrasonicChart = new Chart(ctx, {
@@ -15,7 +12,7 @@ function initializeChart() {
                     label: "Distance (cm)",
                     data: [], // Empty data array for distance readings
                     backgroundColor: "rgba(0, 255, 0, 0.4)", 
-                    borderColor: "rgba(0, 255, 0, 1)", // Green border initially
+                    borderColor: "rgba(0, 255, 0, 1)", 
                     borderWidth: 3,
                     pointBackgroundColor: "rgba(0, 255, 0, 1)",
                     pointBorderColor: "#fff",
@@ -34,7 +31,7 @@ function initializeChart() {
                         color: '#ffffff'
                     },
                     ticks: {
-                        color: '#ffffff' // White tick color for better visibility
+                        color: '#ffffff'
                     }
                 },
                 y: {
@@ -46,7 +43,7 @@ function initializeChart() {
                         color: '#ffffff'
                     },
                     ticks: {
-                        color: '#ffffff' // White tick color for better visibility
+                        color: '#ffffff' 
                     }
                 }
             },
@@ -54,11 +51,11 @@ function initializeChart() {
                 legend: {
                     display: true,
                     labels: {
-                        color: "#ffffff", // Legend text color
+                        color: "#ffffff", 
                     },
                 },
                 tooltip: {
-                    backgroundColor: "rgba(0, 0, 0, 0.8)", // Tooltip background
+                    backgroundColor: "rgba(0, 0, 0, 0.8)", 
                     titleColor: "#ffffff",
                     bodyColor: "#ffffff",
                 },
@@ -66,7 +63,7 @@ function initializeChart() {
         },
     });
 
-    // Function to update the chart with new proximity data
+    // A Function to Update the chart with new proximity data
     function updateChart(data) {
         const distance = data.proximity || 0;
         const time = new Date().toLocaleTimeString(); // Capture current time
@@ -79,14 +76,14 @@ function initializeChart() {
         ultrasonicChart.data.labels.push(time); // Add new time label
         ultrasonicChart.data.datasets[0].data.push(distance); // Add new proximity data
 
-        // Change chart line color based on proximity value
+        // If Our Aircraft i.e an object is closer to the Proximity Sensor more than 15cm the line will turn red
         ultrasonicChart.data.datasets[0].borderColor = distance <= 15 ? "rgba(255, 0, 0, 1)" : "rgba(0, 255, 0, 1)";
 
-        // Update the chart to reflect the new data
+
         ultrasonicChart.update();
     }
 
-    // Listen for changes in sensor data and update the UI and chart
+    // Listen for changes in sensor daa and update the UI and chart
     listenToSensorData((data) => {
         document.getElementById("humidityData").innerHTML = `${data.humidity}%`;
         document.getElementById("temperatureData").innerHTML = `${data.temperature} °C`;
@@ -95,5 +92,5 @@ function initializeChart() {
     });
 }
 
-// Initialize the chart on page load
+// This is used to initialize the cart on page load
 initializeChart();
