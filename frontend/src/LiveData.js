@@ -5,10 +5,12 @@ import Chart from "chart.js/auto";
 
 /*
   LiveData.js
-  - Listens to "iot_data/latest" in your Realtime DB
-  - Shows main dashboard cards, latitude/longitude, and a line chart of distance history
-  - Auto-adds any new numeric parameters as cards
+  - Listens to firebase path "iot_data/latest"
+  - Auto-generates cards for new params
+  - Plots up to two numeric series (prefers distance & temperature)
 */
+
+const MAX_POINTS = 40;
 
 const sanitizeNumber = (v, fallback = 0) => {
   if (v === null || v === undefined) return fallback;
@@ -16,12 +18,11 @@ const sanitizeNumber = (v, fallback = 0) => {
   return Number.isFinite(n) ? n : fallback;
 };
 
-const formatLabel = (key) => {
-  // friendly labels for known keys
-  const mapping = {
+const prettyLabel = (key) => {
+  const map = {
     temperature: "Cabin Temperature",
     humidity: "Cabin Humidity",
-    distance: "Proximity (Ultrasonic)",
+    distance: "Proximity (cm)",
     latitude: "Latitude",
     longitude: "Longitude",
     gpsFix: "GPS Fix",
@@ -29,111 +30,117 @@ const formatLabel = (key) => {
     hdop: "HDOP",
     timestamp: "Last Seen",
   };
-  return mapping[key] || key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  return map[key] || key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 };
 
-// Simple icons (inline SVG) - small, lightweight
-const Icon = ({ type }) => {
-  switch (type) {
+const Icon = ({ name }) => {
+  const s = { width: 28, height: 28 };
+  switch (name) {
     case "temperature":
       return (
-        <svg className="h-8 w-8 text-indigo-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+        <svg style={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
           <path strokeLinecap="round" strokeLinejoin="round" d="M13 16V6a1 1 0 00-1-1h-2a1 1 0 00-1 1v10a4 4 0 104 0z" />
         </svg>
       );
     case "humidity":
       return (
-        <svg className="h-8 w-8 text-blue-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-          <path strokeLinecap="round" strokeLinejoin="round" d="M12 2a10 10 0 00-10 10c0 4.12 2.5 7.62 6 9.24V22h8v- .76c3.5-1.62 6-5.12 6-9.24A10 10 0 0012 2z" />
+        <svg style={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+          <path strokeLinecap="round" strokeLinejoin="round" d="M12 2a10 10 0 00-10 10c0 4.12 2.5 7.62 6 9.24V22h8v-.76c3.5-1.62 6-5.12 6-9.24A10 10 0 0012 2z" />
         </svg>
       );
     case "distance":
       return (
-        <svg className="h-8 w-8 text-purple-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+        <svg style={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
           <path strokeLinecap="round" strokeLinejoin="round" d="M3 12h3M18 12h3M6.5 7.5l11 9M6.5 16.5l11-9" />
-        </svg>
-      );
-    case "location":
-      return (
-        <svg className="h-8 w-8 text-green-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-          <path strokeLinecap="round" strokeLinejoin="round" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
-          <path strokeLinecap="round" strokeLinejoin="round" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
         </svg>
       );
     default:
       return (
-        <svg className="h-8 w-8 text-slate-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.2">
-          <circle cx="12" cy="12" r="9" strokeLinecap="round" strokeLinejoin="round" />
+        <svg style={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.2">
+          <circle cx="12" cy="12" r="9" />
         </svg>
       );
   }
 };
 
-const LiveData = () => {
-  const [data, setData] = useState({
-    temperature: 0,
-    humidity: 0,
-    distance: 0,
-    latitude: 0,
-    longitude: 0,
-  });
-
-  const [chartData, setChartData] = useState({ labels: [], datasets: [] });
+export default function LiveData() {
+  const [latest, setLatest] = useState({});
+  const [history, setHistory] = useState({ labels: [], series: {} });
   const chartRef = useRef(null);
-  const MAX_POINTS = 30;
+  const chartInstanceRef = useRef(null);
 
+  // subscribe to firebase realtime
   useEffect(() => {
-    // attach firebase listener
     const dataRef = ref(database, "iot_data/latest");
     const unsubscribe = onValue(
       dataRef,
-      (snapshot) => {
-        if (!snapshot.exists()) return;
-        const val = snapshot.val();
+      (snap) => {
+        if (!snap.exists()) return;
+        const raw = snap.val();
 
-        // ensure numeric fields are sanitized
-        const sanitized = { ...val };
-        Object.keys(sanitized).forEach((k) => {
-          // keep lat/lon as floats; gpsFix boolean
-          if (k === "gpsFix") sanitized[k] = sanitized[k] === true || sanitized[k] === "true";
-          else if (k === "timestamp") sanitized[k] = sanitized[k];
-          else sanitized[k] = sanitizeNumber(sanitized[k], sanitized[k] === undefined ? 0 : sanitized[k]);
+        // sanitize: convert numeric-like values to numbers, keep booleans/strings
+        const sanitized = {};
+        Object.keys(raw).forEach((k) => {
+          if (k === "gpsFix") {
+            sanitized[k] = raw[k] === true || raw[k] === "true" || raw[k] === 1 || raw[k] === "1";
+          } else if (k === "timestamp") {
+            sanitized[k] = raw[k];
+          } else if (typeof raw[k] === "number") {
+            sanitized[k] = raw[k];
+          } else if (typeof raw[k] === "string") {
+            // try convert to number first
+            const n = Number(raw[k]);
+            sanitized[k] = Number.isFinite(n) ? n : raw[k];
+          } else {
+            sanitized[k] = raw[k];
+          }
         });
 
-        // ensure base keys exist
-        sanitized.temperature = sanitizeNumber(sanitized.temperature, 0);
-        sanitized.humidity = sanitizeNumber(sanitized.humidity, 0);
-        sanitized.distance = sanitizeNumber(sanitized.distance, 0);
-        sanitized.latitude = sanitizeNumber(sanitized.latitude, 0);
-        sanitized.longitude = sanitizeNumber(sanitized.longitude, 0);
+        // Ensure core fields exist
+        sanitized.temperature = sanitizeNumber(sanitized.temperature, sanitized.temperature ?? 0);
+        sanitized.humidity = sanitizeNumber(sanitized.humidity, sanitized.humidity ?? 0);
+        sanitized.distance = sanitizeNumber(sanitized.distance, sanitized.distance ?? 0);
+        sanitized.latitude = sanitizeNumber(sanitized.latitude, sanitized.latitude ?? 0);
+        sanitized.longitude = sanitizeNumber(sanitized.longitude, sanitized.longitude ?? 0);
 
-        setData(sanitized);
+        setLatest(sanitized);
 
-        // update chart (distance history)
-        const nowLabel = new Date().toLocaleTimeString();
-        setChartData((prev) => {
-          const prevLabels = prev.labels ? [...prev.labels] : [];
-          const prevDataset = prev.datasets && prev.datasets[0] ? [...prev.datasets[0].data] : [];
-          prevLabels.push(nowLabel);
-          prevDataset.push(sanitized.distance);
-          // keep last N
-          const labels = prevLabels.slice(-MAX_POINTS);
-          const dataset = prevDataset.slice(-MAX_POINTS);
+        // update history: choose numeric keys to track (distance + temperature preferred)
+        setHistory((prev) => {
+          const labels = [...(prev.labels || []), new Date().toLocaleTimeString()];
+          const numericKeys = [];
 
-          return {
-            labels,
-            datasets: [
-              {
-                label: "Ultrasonic Distance (cm)",
-                data: dataset,
-                fill: true,
-                backgroundColor: "rgba(129,140,248,0.18)",
-                borderColor: "rgba(129,140,248,1)",
-                tension: 0.35,
-                pointBackgroundColor: "rgba(129,140,248,1)",
-              },
-            ],
-          };
+          if ("distance" in sanitized) numericKeys.push("distance");
+          if ("temperature" in sanitized && !numericKeys.includes("temperature")) numericKeys.push("temperature");
+
+          // add other numeric keys if less than 2
+          if (numericKeys.length < 2) {
+            Object.keys(sanitized).forEach((k) => {
+              if (numericKeys.length >= 2) return;
+              if (["timestamp", "latitude", "longitude", "gpsFix"].includes(k)) return;
+              if (typeof sanitized[k] === "number" && !numericKeys.includes(k)) numericKeys.push(k);
+            });
+          }
+
+          // copy previous series
+          const newSeries = { ...(prev.series || {}) };
+          numericKeys.forEach((key) => {
+            const arr = newSeries[key] ? [...newSeries[key]] : [];
+            arr.push(Number(sanitized[key] ?? 0));
+            newSeries[key] = arr.slice(-MAX_POINTS);
+          });
+
+          // trim labels
+          const trimmedLabels = labels.slice(-MAX_POINTS);
+          // ensure all series have same length as labels (pad start if necessary)
+          Object.keys(newSeries).forEach((k) => {
+            if (newSeries[k].length < trimmedLabels.length) {
+              const diff = trimmedLabels.length - newSeries[k].length;
+              newSeries[k] = Array(diff).fill(0).concat(newSeries[k]);
+            }
+          });
+
+          return { labels: trimmedLabels, series: newSeries };
         });
       },
       (err) => {
@@ -141,188 +148,183 @@ const LiveData = () => {
       }
     );
 
-    return () => {
-      unsubscribe();
-    };
+    return () => unsubscribe();
   }, []);
 
-  // Chart init/update
+  // chart creation / update
   useEffect(() => {
-    const canvas = document.getElementById("ultrasonicChart");
+    const canvas = document.getElementById("liveChart");
     if (!canvas) return;
-    if (chartRef.current) chartRef.current.destroy();
 
-    // create chart
-    chartRef.current = new Chart(canvas, {
-      type: "line",
-      data: chartData,
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        scales: {
-          y: {
-            beginAtZero: true,
-            max: Math.max(300, ...((chartData.datasets[0]?.data || []).map((n) => Number(n) || 0))) * 1.1,
-            title: { display: true, text: "Distance (cm)" },
-          },
-          x: {
-            title: { display: true, text: "Time" },
-          },
-        },
-        plugins: {
-          legend: { display: false },
-          title: {
-            display: true,
-            text: "Real-time Proximity Readings",
-            font: { size: 16 },
-          },
-        },
-      },
+    // build datasets from history.series (up to 2 datasets)
+    const keys = Object.keys(history.series || []);
+    const datasets = keys.slice(0, 2).map((k, idx) => {
+      const colors = [
+        { bg: "rgba(99,102,241,0.18)", border: "rgba(99,102,241,1)" },
+        { bg: "rgba(16,185,129,0.15)", border: "rgba(16,185,129,1)" },
+      ];
+      const color = colors[idx] || colors[0];
+      return {
+        label: prettyLabel(k),
+        data: history.series[k] || [],
+        fill: true,
+        backgroundColor: color.bg,
+        borderColor: color.border,
+        tension: 0.3,
+        pointRadius: 2,
+        pointHoverRadius: 4,
+      };
     });
 
-    return () => {
-      if (chartRef.current) chartRef.current.destroy();
+    const chartData = {
+      labels: history.labels || [],
+      datasets,
     };
-  }, [chartData]);
 
-  // build cards: primary set (consistent), plus extras (auto detect numeric fields)
-  const primaryKeys = ["temperature", "humidity", "distance", "latitude", "longitude"];
-  const extras = Object.keys(data).filter((k) => !primaryKeys.includes(k) && k !== "timestamp");
-
-  // prepare cards in display order
-  const cards = [
-    {
-      key: "temperature",
-      title: "Cabin Temperature",
-      value: data.temperature,
-      unit: "°C",
-      iconType: "temperature",
-    },
-    {
-      key: "humidity",
-      title: "Cabin Humidity",
-      value: data.humidity,
-      unit: "%",
-      iconType: "humidity",
-    },
-    {
-      key: "distance",
-      title: "Ultrasonic Sensor",
-      value: data.distance,
-      unit: "cm",
-      iconType: "distance",
-    },
-  ];
-
-  // append extras (only show simple scalars: numbers/booleans)
-  extras.forEach((k) => {
-    // show booleans and numbers
-    const raw = data[k];
-    const isBoolean = typeof raw === "boolean";
-    const isNumber = typeof raw === "number";
-    if (isBoolean || isNumber || typeof raw === "string") {
-      cards.push({
-        key: k,
-        title: formatLabel(k),
-        value: isBoolean ? (raw ? "Yes" : "No") : raw,
-        unit: isBoolean ? "" : "",
-        iconType: "default",
+    if (chartInstanceRef.current) {
+      // update data
+      chartInstanceRef.current.data = chartData;
+      chartInstanceRef.current.options.scales.y.max =
+        datasets.length && datasets[0].data.length ? Math.max(300, ...datasets[0].data) * 1.1 : 300;
+      chartInstanceRef.current.update();
+    } else {
+      chartInstanceRef.current = new Chart(canvas, {
+        type: "line",
+        data: chartData,
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: { display: datasets.length > 0 },
+            title: { display: true, text: "Realtime Sensor Trends" },
+          },
+          scales: {
+            x: { title: { display: true, text: "Time" } },
+            y: { beginAtZero: true, title: { display: true, text: "Value" }, suggestedMax: 300 },
+          },
+        },
       });
+    }
+
+    return () => {
+      // don't destroy immediately (we keep chart instance around)
+    };
+  }, [history]);
+
+  // Build cards: primary ordering for common fields
+  const primaryOrder = ["temperature", "humidity", "distance", "latitude", "longitude"];
+  const keys = Array.from(new Set([...primaryOrder.filter((k) => k in latest), ...Object.keys(latest)]));
+
+  // create cards array (skip timestamp in main list)
+  const cards = keys
+    .filter((k) => k !== "timestamp")
+    .map((k) => {
+      const v = latest[k];
+      let display = v;
+      let unit = "";
+      if (k === "temperature") unit = "°C";
+      if (k === "humidity") unit = "%";
+      if (k === "distance") unit = "cm";
+      if (k === "latitude" || k === "longitude") {
+        display = typeof v === "number" ? v.toFixed(6) : v;
+      } else if (typeof v === "number") {
+        display = Number.isFinite(v) ? Number(v).toFixed(2) : v;
+      } else if (typeof v === "boolean") {
+        display = v ? "Yes" : "No";
+      }
+      return { key: k, title: prettyLabel(k), value: display, unit };
+    });
+
+  // Add a small set of fallback static cards if not present
+  const ensureKeys = ["temperature", "humidity", "distance"];
+  ensureKeys.forEach((k) => {
+    if (!cards.find((c) => c.key === k)) {
+      let defaultValue = 0;
+      if (k === "temperature" && latest.temperature !== undefined) defaultValue = latest.temperature;
+      cards.push({ key: k, title: prettyLabel(k), value: defaultValue, unit: k === "distance" ? "cm" : k === "humidity" ? "%" : "°C" });
     }
   });
 
-  // static cards for pressure/CO2/O2 (placeholders if not present)
-  const staticExtra = [
-    { key: "pressure", title: "Cabin Pressure", value: data.pressure ?? 1013, unit: "hPa" },
-    { key: "co2", title: "CO₂ Concentration", value: data.co2 ?? 415, unit: "ppm" },
-    { key: "o2", title: "O₂ Concentration", value: data.o2 ?? 20.9, unit: "%" },
-  ];
-
   return (
     <>
-      {/* Tailwind + font (allowed as you used earlier) */}
-      <script src="https://cdn.tailwindcss.com"></script>
-      <link rel="preconnect" href="https://fonts.googleapis.com" />
-      <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="true" />
-      <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet" />
+      <style>{`
+        :root{ --bg:#0b1220; --card:#0f1724; --muted:#94a3b8; --accent:#6366f1; --glass: rgba(255,255,255,0.03)}
+        *{box-sizing:border-box}
+        body{margin:0}
+        .wrap{min-height:100vh;background:var(--bg);color:#e6eef8;font-family:Inter,ui-sans-serif,system-ui,Arial;padding:28px;}
+        .container{max-width:1200px;margin:0 auto}
+        .header{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;gap:12px;flex-wrap:wrap}
+        .title{display:flex;gap:12px;align-items:center}
+        .logo{width:40px;height:40px;border-radius:8px;background:linear-gradient(135deg,#4338ca,#06b6d4);display:flex;align-items:center;justify-content:center;font-weight:700;color:white}
+        .subtitle{color:var(--muted);font-size:0.95rem}
+        .status{color:var(--muted)}
+        .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px;margin-bottom:18px}
+        .card{background:var(--card);padding:16px;border-radius:12px;border:1px solid rgba(255,255,255,0.03);box-shadow:0 6px 18px rgba(2,6,23,0.7)}
+        .card .top{display:flex;justify-content:space-between;align-items:flex-start}
+        .titleSmall{font-size:0.9rem;color:var(--muted)}
+        .value{font-size:1.9rem;font-weight:700;margin-top:8px}
+        .unit{font-size:1rem;color:var(--muted);margin-left:8px}
+        .bottomGrid{display:grid;grid-template-columns:1fr;gap:16px}
+        @media(min-width:1024px){ .bottomGrid{grid-template-columns:2fr 1fr} }
+        .chartCard{height:320px}
+        .latlonWrap{display:flex;flex-direction:column;gap:12px}
+        .latlonItem{background:var(--card);padding:14px;border-radius:12px}
+      `}</style>
 
-      <main className="bg-slate-900 min-h-screen p-4 sm:p-6 lg:p-8 font-['Inter'] text-slate-200">
-        <div className="max-w-7xl mx-auto">
-          {/* Header */}
-          <header className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-8">
-            <div>
-              <h1 className="text-3xl font-bold text-white flex items-center gap-3">
-                <img src="/logo.png" alt="logo" className="w-9 h-9 object-contain rounded-md" />
-                AeroSensor Dashboard
-              </h1>
-              <p className="text-slate-400 mt-1">Live Aircraft Monitoring System</p>
+      <div className="wrap">
+        <div className="container">
+          <header className="header">
+            <div className="title">
+              <div className="logo">AS</div>
+              <div>
+                <div style={{ fontSize: "1.25rem", fontWeight: 700 }}>AeroSensor Dashboard</div>
+                <div className="subtitle">Live Aircraft Monitoring</div>
+              </div>
             </div>
-            <div className="text-sm text-slate-400 mt-4 sm:mt-0">
-              Status: <span className="font-semibold text-green-400">● Live</span>
+            <div className="status">
+              Status: <span style={{ color: "#34d399", fontWeight: 700 }}>● Live</span>
             </div>
           </header>
 
-          {/* Cards grid */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6 mb-8">
+          <section className="grid" aria-live="polite">
             {cards.map((c) => (
-              <div key={c.key} className="bg-slate-800/50 p-6 rounded-2xl border border-slate-700 shadow-lg transition-all duration-300 hover:border-indigo-500">
-                <div className="flex justify-between items-start">
-                  <p className="text-sm font-medium text-slate-400">{c.title}</p>
-                  <Icon type={c.iconType} />
+              <article key={c.key} className="card">
+                <div className="top">
+                  <div className="titleSmall">{c.title}</div>
+                  <div style={{ opacity: 0.95 }}>
+                    <Icon name={c.key} />
+                  </div>
                 </div>
-                <p className="text-4xl font-bold text-white mt-2">
-                  {typeof c.value === "number" ? c.value : String(c.value)}
-                  <span className="text-2xl font-medium text-slate-400"> {c.unit}</span>
-                </p>
-              </div>
-            ))}
-
-            {/* static extras */}
-            {staticExtra.map((s) => (
-              <div key={s.key} className="bg-slate-800/50 p-6 rounded-2xl border border-slate-700 shadow-lg transition-all duration-300 hover:border-indigo-500">
-                <div className="flex justify-between items-start">
-                  <p className="text-sm font-medium text-slate-400">{s.title}</p>
-                  <svg className="h-8 w-8 text-yellow-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.2">
-                    <circle cx="12" cy="12" r="9" />
-                  </svg>
+                <div style={{ display: "flex", alignItems: "baseline" }}>
+                  <div className="value">{c.value}</div>
+                  <div className="unit">{c.unit}</div>
                 </div>
-                <p className="text-4xl font-bold text-white mt-2">
-                  {s.value} <span className="text-2xl font-medium text-slate-400">{s.unit}</span>
-                </p>
-              </div>
+              </article>
             ))}
-          </div>
+          </section>
 
-          {/* Chart + Lat/Lon */}
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <div className="lg:col-span-2 bg-slate-800/50 p-6 rounded-2xl border border-slate-700 shadow-lg">
-              <div className="h-96 w-full">
-                <canvas id="ultrasonicChart"></canvas>
-              </div>
+          <section className="bottomGrid">
+            <div className="card chartCard">
+              <canvas id="liveChart" style={{ width: "100%", height: "100%" }} />
             </div>
 
-            <div className="flex flex-col gap-6">
-              <div className="bg-slate-800/50 p-6 rounded-2xl border border-slate-700 shadow-lg">
-                <div className="flex justify-between items-start">
-                  <p className="text-sm font-medium text-slate-400">Latitude</p>
-                  <Icon type="location" />
-                </div>
-                <p className="text-4xl font-bold text-white mt-2">{(data.latitude || 0).toFixed(6)}</p>
+            <aside style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              <div className="latlonItem">
+                <div className="titleSmall">Latitude</div>
+                <div style={{ fontSize: 20, fontWeight: 700 }}>{(latest.latitude ?? 0).toFixed(6)}</div>
               </div>
-
-              <div className="bg-slate-800/50 p-6 rounded-2xl border border-slate-700 shadow-lg">
-                <div className="flex justify-between items-start">
-                  <p className="text-sm font-medium text-slate-400">Longitude</p>
-                  <Icon type="location" />
-                </div>
-                <p className="text-4xl font-bold text-white mt-2">{(data.longitude || 0).toFixed(6)}</p>
+              <div className="latlonItem">
+                <div className="titleSmall">Longitude</div>
+                <div style={{ fontSize: 20, fontWeight: 700 }}>{(latest.longitude ?? 0).toFixed(6)}</div>
               </div>
-            </div>
-          </div>
+              <div className="latlonItem">
+                <div className="titleSmall">Last Updated</div>
+                <div style={{ fontSize: 14, color: "#94a3b8" }}>{latest.timestamp ?? new Date().toLocaleString()}</div>
+              </div>
+            </aside>
+          </section>
         </div>
-      </main>
+      </div>
     </>
   );
-};
-
-export default LiveData;
+}
