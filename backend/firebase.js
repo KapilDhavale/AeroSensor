@@ -1,4 +1,4 @@
-require("dotenv").config(); // Load .env
+require("dotenv").config(); // Load environment variables
 
 const { initializeApp } = require("firebase/app");
 const { getDatabase, ref, set } = require("firebase/database");
@@ -17,7 +17,6 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const database = getDatabase(app);
 
-// Log confirmation
 console.log("✅ Firebase initialized and database ready");
 
 module.exports = { database, ref, set };
