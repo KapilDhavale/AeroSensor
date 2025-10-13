@@ -3,14 +3,9 @@ import React, { useEffect, useState, useRef } from "react";
 import { database, ref, onValue } from "./firebase";
 import Chart from "chart.js/auto";
 
-/*
-  LiveData.js
-  - Listens to firebase path "iot_data/latest"
-  - Auto-generates cards for new params
-  - Plots up to two numeric series (prefers distance & temperature)
-*/
-
 const MAX_POINTS = 40;
+const FLASH_MS = 800; // green flash duration
+const LIVE_TIMEOUT_MS = 20000; // consider "offline" if no update for 20s
 
 const sanitizeNumber = (v, fallback = 0) => {
   if (v === null || v === undefined) return fallback;
@@ -66,10 +61,15 @@ const Icon = ({ name }) => {
 export default function LiveData() {
   const [latest, setLatest] = useState({});
   const [history, setHistory] = useState({ labels: [], series: {} });
-  const chartRef = useRef(null);
+  const [justUpdated, setJustUpdated] = useState(false);
+  const [lastSeenTs, setLastSeenTs] = useState(null);
+  const [isLive, setIsLive] = useState(false);
+
+  const updateTimeoutRef = useRef(null);
+  const liveCheckIntervalRef = useRef(null);
   const chartInstanceRef = useRef(null);
 
-  // subscribe to firebase realtime
+  // Listen to Firebase Realtime Database
   useEffect(() => {
     const dataRef = ref(database, "iot_data/latest");
     const unsubscribe = onValue(
@@ -78,7 +78,7 @@ export default function LiveData() {
         if (!snap.exists()) return;
         const raw = snap.val();
 
-        // sanitize: convert numeric-like values to numbers, keep booleans/strings
+        // sanitize fields
         const sanitized = {};
         Object.keys(raw).forEach((k) => {
           if (k === "gpsFix") {
@@ -88,7 +88,6 @@ export default function LiveData() {
           } else if (typeof raw[k] === "number") {
             sanitized[k] = raw[k];
           } else if (typeof raw[k] === "string") {
-            // try convert to number first
             const n = Number(raw[k]);
             sanitized[k] = Number.isFinite(n) ? n : raw[k];
           } else {
@@ -96,24 +95,35 @@ export default function LiveData() {
           }
         });
 
-        // Ensure core fields exist
-        sanitized.temperature = sanitizeNumber(sanitized.temperature, sanitized.temperature ?? 0);
-        sanitized.humidity = sanitizeNumber(sanitized.humidity, sanitized.humidity ?? 0);
-        sanitized.distance = sanitizeNumber(sanitized.distance, sanitized.distance ?? 0);
-        sanitized.latitude = sanitizeNumber(sanitized.latitude, sanitized.latitude ?? 0);
-        sanitized.longitude = sanitizeNumber(sanitized.longitude, sanitized.longitude ?? 0);
+        // ensure core numeric keys exist
+        sanitized.temperature = sanitizeNumber(sanitized.temperature, 0);
+        sanitized.humidity = sanitizeNumber(sanitized.humidity, 0);
+        sanitized.distance = sanitizeNumber(sanitized.distance, 0);
+        sanitized.latitude = sanitizeNumber(sanitized.latitude, 0);
+        sanitized.longitude = sanitizeNumber(sanitized.longitude, 0);
 
         setLatest(sanitized);
 
-        // update history: choose numeric keys to track (distance + temperature preferred)
-        setHistory((prev) => {
-          const labels = [...(prev.labels || []), new Date().toLocaleTimeString()];
-          const numericKeys = [];
+        // update lastSeen (use server timestamp if provided and valid, else reception time)
+        const recv = Date.now();
+        let receivedTs = recv;
+        if (sanitized.timestamp) {
+          const parsed = Date.parse(sanitized.timestamp);
+          if (!Number.isNaN(parsed)) receivedTs = parsed;
+        }
+        setLastSeenTs(receivedTs);
 
+        // flash indicator
+        setJustUpdated(true);
+        if (updateTimeoutRef.current) clearTimeout(updateTimeoutRef.current);
+        updateTimeoutRef.current = setTimeout(() => setJustUpdated(false), FLASH_MS);
+
+        // update history (distance + temperature preferred)
+        setHistory((prev) => {
+          const labels = [...(prev.labels || []), new Date(receivedTs).toLocaleTimeString()];
+          const numericKeys = [];
           if ("distance" in sanitized) numericKeys.push("distance");
           if ("temperature" in sanitized && !numericKeys.includes("temperature")) numericKeys.push("temperature");
-
-          // add other numeric keys if less than 2
           if (numericKeys.length < 2) {
             Object.keys(sanitized).forEach((k) => {
               if (numericKeys.length >= 2) return;
@@ -121,25 +131,19 @@ export default function LiveData() {
               if (typeof sanitized[k] === "number" && !numericKeys.includes(k)) numericKeys.push(k);
             });
           }
-
-          // copy previous series
           const newSeries = { ...(prev.series || {}) };
           numericKeys.forEach((key) => {
             const arr = newSeries[key] ? [...newSeries[key]] : [];
             arr.push(Number(sanitized[key] ?? 0));
             newSeries[key] = arr.slice(-MAX_POINTS);
           });
-
-          // trim labels
           const trimmedLabels = labels.slice(-MAX_POINTS);
-          // ensure all series have same length as labels (pad start if necessary)
           Object.keys(newSeries).forEach((k) => {
             if (newSeries[k].length < trimmedLabels.length) {
               const diff = trimmedLabels.length - newSeries[k].length;
               newSeries[k] = Array(diff).fill(0).concat(newSeries[k]);
             }
           });
-
           return { labels: trimmedLabels, series: newSeries };
         });
       },
@@ -148,16 +152,33 @@ export default function LiveData() {
       }
     );
 
-    return () => unsubscribe();
+    return () => {
+      unsubscribe();
+      if (updateTimeoutRef.current) clearTimeout(updateTimeoutRef.current);
+    };
   }, []);
 
-  // chart creation / update
+  // Live check interval
+  useEffect(() => {
+    const checkLive = () => {
+      if (!lastSeenTs) {
+        setIsLive(false);
+        return;
+      }
+      const age = Date.now() - lastSeenTs;
+      setIsLive(age <= LIVE_TIMEOUT_MS);
+    };
+    checkLive();
+    liveCheckIntervalRef.current = setInterval(checkLive, 1000);
+    return () => clearInterval(liveCheckIntervalRef.current);
+  }, [lastSeenTs]);
+
+  // Chart init/update
   useEffect(() => {
     const canvas = document.getElementById("liveChart");
     if (!canvas) return;
 
-    // build datasets from history.series (up to 2 datasets)
-    const keys = Object.keys(history.series || []);
+    const keys = Object.keys(history.series || {});
     const datasets = keys.slice(0, 2).map((k, idx) => {
       const colors = [
         { bg: "rgba(99,102,241,0.18)", border: "rgba(99,102,241,1)" },
@@ -176,13 +197,9 @@ export default function LiveData() {
       };
     });
 
-    const chartData = {
-      labels: history.labels || [],
-      datasets,
-    };
+    const chartData = { labels: history.labels || [], datasets };
 
     if (chartInstanceRef.current) {
-      // update data
       chartInstanceRef.current.data = chartData;
       chartInstanceRef.current.options.scales.y.max =
         datasets.length && datasets[0].data.length ? Math.max(300, ...datasets[0].data) * 1.1 : 300;
@@ -205,17 +222,15 @@ export default function LiveData() {
         },
       });
     }
-
+    // cleanup on unmount
     return () => {
-      // don't destroy immediately (we keep chart instance around)
+      // keep instance (destroy on full unmount handled by browser reload)
     };
   }, [history]);
 
-  // Build cards: primary ordering for common fields
+  // Build display cards
   const primaryOrder = ["temperature", "humidity", "distance", "latitude", "longitude"];
   const keys = Array.from(new Set([...primaryOrder.filter((k) => k in latest), ...Object.keys(latest)]));
-
-  // create cards array (skip timestamp in main list)
   const cards = keys
     .filter((k) => k !== "timestamp")
     .map((k) => {
@@ -235,15 +250,30 @@ export default function LiveData() {
       return { key: k, title: prettyLabel(k), value: display, unit };
     });
 
-  // Add a small set of fallback static cards if not present
-  const ensureKeys = ["temperature", "humidity", "distance"];
-  ensureKeys.forEach((k) => {
+  // ensure some core cards if missing
+  ["temperature", "humidity", "distance"].forEach((k) => {
     if (!cards.find((c) => c.key === k)) {
-      let defaultValue = 0;
-      if (k === "temperature" && latest.temperature !== undefined) defaultValue = latest.temperature;
-      cards.push({ key: k, title: prettyLabel(k), value: defaultValue, unit: k === "distance" ? "cm" : k === "humidity" ? "%" : "°C" });
+      cards.push({
+        key: k,
+        title: prettyLabel(k),
+        value: latest[k] ?? 0,
+        unit: k === "distance" ? "cm" : k === "humidity" ? "%" : "°C",
+      });
     }
   });
+
+  // helper to format last seen
+  const renderLastSeen = () => {
+    if (!lastSeenTs) return "Never";
+    const agoMs = Date.now() - lastSeenTs;
+    if (agoMs < 1000) return "just now";
+    const s = Math.round(agoMs / 1000);
+    if (s < 60) return `${s}s ago`;
+    const m = Math.round(s / 60);
+    if (m < 60) return `${m}m ago`;
+    const h = Math.round(m / 60);
+    return `${h}h ago`;
+  };
 
   return (
     <>
@@ -251,29 +281,38 @@ export default function LiveData() {
         :root{ --bg:#0b1220; --card:#0f1724; --muted:#94a3b8; --accent:#6366f1; --glass: rgba(255,255,255,0.03)}
         *{box-sizing:border-box}
         body{margin:0}
-        .wrap{min-height:100vh;background:var(--bg);color:#e6eef8;font-family:Inter,ui-sans-serif,system-ui,Arial;padding:28px;}
+        .wrap{min-height:100vh;background:var(--bg);color:#e6eef0;font-family:Inter,ui-sans-serif,system-ui,Arial;padding:20px;}
         .container{max-width:1200px;margin:0 auto}
-        .header{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;gap:12px;flex-wrap:wrap}
+        .header{display:flex;justify-content:space-between;align-items:center;margin-bottom:18px;gap:12px;flex-wrap:wrap}
         .title{display:flex;gap:12px;align-items:center}
         .logo{width:40px;height:40px;border-radius:8px;background:linear-gradient(135deg,#4338ca,#06b6d4);display:flex;align-items:center;justify-content:center;font-weight:700;color:white}
         .subtitle{color:var(--muted);font-size:0.95rem}
         .status{color:var(--muted)}
-        .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px;margin-bottom:18px}
-        .card{background:var(--card);padding:16px;border-radius:12px;border:1px solid rgba(255,255,255,0.03);box-shadow:0 6px 18px rgba(2,6,23,0.7)}
+        .status-bullet { margin-right: 8px; font-weight: 700; }
+        .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px;margin-bottom:14px}
+        .card{background:var(--card);padding:14px;border-radius:12px;border:1px solid rgba(255,255,255,0.03);box-shadow:0 6px 18px rgba(2,6,23,0.7)}
         .card .top{display:flex;justify-content:space-between;align-items:flex-start}
         .titleSmall{font-size:0.9rem;color:var(--muted)}
-        .value{font-size:1.9rem;font-weight:700;margin-top:8px}
+        .value{font-size:1.9rem;font-weight:700;margin-top:8px;color:#fff;transition: color 0.25s ease, transform 0.25s ease;}
+        .value.flash { color: #34d399 !important; transform: translateY(-2px); } /* green and slight lift */
         .unit{font-size:1rem;color:var(--muted);margin-left:8px}
-        .bottomGrid{display:grid;grid-template-columns:1fr;gap:16px}
+        .bottomGrid{display:grid;grid-template-columns:1fr;gap:12px}
         @media(min-width:1024px){ .bottomGrid{grid-template-columns:2fr 1fr} }
         .chartCard{height:320px}
         .latlonWrap{display:flex;flex-direction:column;gap:12px}
-        .latlonItem{background:var(--card);padding:14px;border-radius:12px}
+        .latlonItem{background:var(--card);padding:12px;border-radius:12px}
+        /* Credits styling - responsive */
+        .credits { margin-top: 18px; display:flex; flex-wrap:wrap; gap: 10px; align-items:center; justify-content:flex-end; color: var(--muted); font-size: 0.95rem; }
+        .credits a { color: var(--muted); text-decoration: none; font-weight: 600; }
+        .credits a:hover { color: #fff; text-decoration: underline; }
+        @media(max-width:640px) {
+          .credits { justify-content:center; text-align:center; }
+        }
       `}</style>
 
       <div className="wrap">
         <div className="container">
-          <header className="header">
+          <header className="header" aria-live="polite">
             <div className="title">
               <div className="logo">AS</div>
               <div>
@@ -281,14 +320,21 @@ export default function LiveData() {
                 <div className="subtitle">Live Aircraft Monitoring</div>
               </div>
             </div>
-            <div className="status">
-              Status: <span style={{ color: "#34d399", fontWeight: 700 }}>● Live</span>
+
+            <div className="status" title={`Last update: ${lastSeenTs ? new Date(lastSeenTs).toLocaleString() : "never"}`}>
+              <span className="status-bullet" style={{ color: isLive ? "#34d399" : "#ef4444" }}>
+                {isLive ? "●" : "◌"}
+              </span>
+              <span style={{ fontWeight: 700, color: isLive ? "#34d399" : "#ef4444" }}>{isLive ? "Live" : "Offline"}</span>
+              <div style={{ color: "#94a3b8", fontSize: "0.9rem", marginTop: 4 }}>
+                {isLive ? `Last update: ${renderLastSeen()}` : `Last seen: ${renderLastSeen()}`}
+              </div>
             </div>
           </header>
 
           <section className="grid" aria-live="polite">
             {cards.map((c) => (
-              <article key={c.key} className="card">
+              <article key={c.key} className="card" aria-label={c.title}>
                 <div className="top">
                   <div className="titleSmall">{c.title}</div>
                   <div style={{ opacity: 0.95 }}>
@@ -296,7 +342,7 @@ export default function LiveData() {
                   </div>
                 </div>
                 <div style={{ display: "flex", alignItems: "baseline" }}>
-                  <div className="value">{c.value}</div>
+                  <div className={`value ${justUpdated ? "flash" : ""}`}>{c.value}</div>
                   <div className="unit">{c.unit}</div>
                 </div>
               </article>
@@ -319,10 +365,23 @@ export default function LiveData() {
               </div>
               <div className="latlonItem">
                 <div className="titleSmall">Last Updated</div>
-                <div style={{ fontSize: 14, color: "#94a3b8" }}>{latest.timestamp ?? new Date().toLocaleString()}</div>
+                <div style={{ fontSize: 14, color: "#94a3b8" }}>{lastSeenTs ? new Date(lastSeenTs).toLocaleString() : "Never"}</div>
               </div>
             </aside>
           </section>
+
+          {/* Responsive credits */}
+          <div className="credits" aria-label="credits">
+            <div>Made by</div>
+            <a href="https://www.linkedin.com/in/kapildhavale" target="_blank" rel="noopener noreferrer">Kapil Dhavale</a>
+            <span>·</span>
+            <a href="https://www.linkedin.com/in/riddhi-buva" target="_blank" rel="noopener noreferrer">Riddhi Buva</a>
+            {/* <div>Riddhi Buva</div> */}
+            <span>·</span>
+            <div>Manasvi Bhalerao</div>
+            <span>·</span>
+            <div>ECS, VESIT</div>
+          </div>
         </div>
       </div>
     </>
