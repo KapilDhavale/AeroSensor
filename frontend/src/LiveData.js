@@ -14,6 +14,7 @@ const styles = `
     background-color: #f4f4f4;
     margin: 0;
     padding: 0;
+    overflow-x: hidden; /* Prevents horizontal scroll */
   }
 
   .header {
@@ -44,12 +45,12 @@ const styles = `
 
   .rows {
     width: 100%;
-    height: 120px;
     display: flex;
     flex-direction: row;
-    justify-content: space-evenly;
+    justify-content: center; /* Center cards instead of space-evenly */
+    gap: 30px; /* Modern way to add space between items */
     margin-bottom: 30px;
-    flex-wrap: wrap; /* Added for better responsiveness */
+    flex-wrap: wrap; /* Allows cards to wrap to the next line on smaller screens */
   }
 
   .cards {
@@ -63,14 +64,14 @@ const styles = `
     align-items: center;
     font-family: "Merriweather", serif;
     font-size: 25px;
-    padding: 0px 20px;
-    transition: all 0.3s ease; /* Smooth transition for hover */
+    padding: 20px;
+    transition: all 0.3s ease;
   }
 
   .cards:hover {
     background-color: rgba(80, 200, 120, 0.25);
     border: 1px solid rgba(47, 141, 79, 1);
-    transform: translateY(-5px); /* Add a subtle lift effect */
+    transform: translateY(-5px);
   }
 
   .value {
@@ -78,8 +79,9 @@ const styles = `
     border: 1px solid rgba(0, 14, 83, 0.3);
     border-radius: 6px;
     display: flex;
-    width: 110px;
+    min-width: 110px;
     height: 80px;
+    padding: 5px;
     justify-content: center;
     align-items: center;
     font-family: "Roboto", sans-serif;
@@ -104,11 +106,52 @@ const styles = `
 
   .chart-container {
     max-width: 1000px;
-    margin: 20px auto; /* Center the chart */
+    margin: 20px auto;
     padding: 20px;
     background-color: #ffffff; 
     border-radius: 8px; 
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1); 
+  }
+
+  /* --- RESPONSIVE STYLES FOR MOBILE --- */
+  @media (max-width: 768px) {
+    .header {
+      font-size: 32px;
+      text-align: center;
+      padding: 15px;
+    }
+
+    .logo {
+      width: 100%;
+      align-items: center;
+    }
+
+    .rows {
+      flex-direction: column; /* Stack cards vertically */
+      align-items: center; /* Center the stacked cards */
+      gap: 20px;
+      margin-bottom: 20px;
+    }
+
+    .cards {
+      width: 90%; /* Make cards take up most of the screen width */
+      font-size: 20px;
+      padding: 15px;
+    }
+
+    .value {
+      font-size: 18px;
+    }
+    
+    .chart-container {
+      width: 95%; /* Ensure chart container fits screen */
+      padding: 10px;
+    }
+    
+    .footer {
+      justify-content: center; /* Center footer text */
+      font-size: 16px;
+    }
   }
 `;
 
@@ -172,7 +215,6 @@ const LiveData = () => {
   useEffect(() => {
     const canvas = document.getElementById('ultrasonicChart');
     if (canvas) {
-      // Destroy existing chart instance before creating a new one
       if (chartRef.current) {
         chartRef.current.destroy();
       }
@@ -214,13 +256,12 @@ const LiveData = () => {
       });
     }
 
-    // Cleanup chart on component unmount
     return () => {
         if(chartRef.current) {
             chartRef.current.destroy();
         }
     }
-  }, [chartData]); // Re-run effect when chartData updates
+  }, [chartData]);
 
   return (
     <>
@@ -228,7 +269,6 @@ const LiveData = () => {
       <div className="live-data-container">
         <div className="header">
           <div className="logo">
-            {/* Make sure logo.png is in your /public folder */}
             <img src="logo.png" alt="AeroSensor Logo" />
             AeroSensor
           </div>
@@ -270,7 +310,6 @@ const LiveData = () => {
           </div>
         </div>
 
-        {/* Chart */}
         <div className="chart-container">
           <canvas id="ultrasonicChart" height="400"></canvas>
         </div>

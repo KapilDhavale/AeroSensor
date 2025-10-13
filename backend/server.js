@@ -1,10 +1,11 @@
+require("dotenv").config();
 const express = require("express");
 const bodyParser = require("body-parser");
 const cors = require("cors");
 const { database, ref, set } = require("./firebase"); // import Firebase
 
 const app = express();
-const PORT = 5000;
+const PORT = process.env.PORT || 5000; // Render dynamic port
 
 // Middleware
 app.use(cors());
@@ -12,7 +13,26 @@ app.use(bodyParser.json());
 
 // Route to receive ESP8266 data with GPS
 app.post("/data", async (req, res) => {
-  const { temperature, humidity, distance, latitude, longitude, gpsFix, satellites, hdop } = req.body;
+  let {
+    temperature,
+    humidity,
+    distance,
+    latitude,
+    longitude,
+    gpsFix,
+    satellites,
+    hdop
+  } = req.body;
+
+  // Ensure no undefined values
+  gpsFix = gpsFix ?? false;
+  satellites = satellites ?? 0;
+  hdop = hdop ?? 0.0;
+  latitude = latitude ?? 0.0;
+  longitude = longitude ?? 0.0;
+  distance = distance ?? 0.0;
+  temperature = temperature ?? 0.0;
+  humidity = humidity ?? 0.0;
 
   console.log("📡 Data received from ESP8266:");
   console.log(`🌡 Temperature: ${temperature} °C`);
@@ -26,8 +46,7 @@ app.post("/data", async (req, res) => {
   console.log("---------------------------------");
 
   try {
-    // Overwrite the latest data in Firebase
-    const dbRef = ref(database, "iot_data/latest"); 
+    const dbRef = ref(database, "iot_data/latest");
     await set(dbRef, {
       temperature,
       humidity,
@@ -51,6 +70,7 @@ app.post("/data", async (req, res) => {
 // Optional: basic route
 app.get("/", (req, res) => res.send("ESP8266 Node.js Server is running ✅"));
 
+// Start server
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
