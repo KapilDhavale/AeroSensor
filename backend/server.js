@@ -12,7 +12,7 @@ app.use(bodyParser.json());
 
 // Route to receive ESP8266 data with GPS
 app.post("/data", async (req, res) => {
-  const { temperature, humidity, distance, latitude, longitude } = req.body;
+  const { temperature, humidity, distance, latitude, longitude, gpsFix, satellites, hdop } = req.body;
 
   console.log("📡 Data received from ESP8266:");
   console.log(`🌡 Temperature: ${temperature} °C`);
@@ -20,6 +20,9 @@ app.post("/data", async (req, res) => {
   console.log(`📏 Distance: ${distance} cm`);
   console.log(`📍 Latitude: ${latitude}`);
   console.log(`📍 Longitude: ${longitude}`);
+  console.log(`🛰 GPS Fix Acquired: ${gpsFix}`);
+  console.log(`🛰 Satellites in view: ${satellites}`);
+  console.log(`🛰 HDOP: ${hdop}`);
   console.log("---------------------------------");
 
   try {
@@ -31,10 +34,13 @@ app.post("/data", async (req, res) => {
       distance,
       latitude,
       longitude,
+      gpsFix,
+      satellites,
+      hdop,
       timestamp: new Date().toISOString()
     });
 
-    console.log("✅ Firebase updated with latest data including GPS");
+    console.log("✅ Firebase updated with latest data including GPS stats");
     res.status(200).json({ message: "Data updated in Firebase" });
   } catch (err) {
     console.error("❌ Failed to update Firebase:", err);

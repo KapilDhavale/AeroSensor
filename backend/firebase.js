@@ -1,15 +1,16 @@
+require("dotenv").config(); // Load .env
+
 const { initializeApp } = require("firebase/app");
 const { getDatabase, ref, set } = require("firebase/database");
 
-// Your Firebase config
 const firebaseConfig = {
-  apiKey: "AIzaSyBXgBt6ZGAEPMdSY39V8swJ6esAOWPDYlQ",
-  authDomain: "iotprojectexp8.firebaseapp.com",
-  databaseURL: "https://iotprojectexp8-default-rtdb.firebaseio.com",
-  projectId: "iotprojectexp8",
-  storageBucket: "iotprojectexp8.firebasestorage.app",
-  messagingSenderId: "645990672071",
-  appId: "1:645990672071:web:0980f0a51bfe94826700e2",
+  apiKey: process.env.FIREBASE_API_KEY,
+  authDomain: process.env.FIREBASE_AUTH_DOMAIN,
+  databaseURL: process.env.FIREBASE_DATABASE_URL,
+  projectId: process.env.FIREBASE_PROJECT_ID,
+  storageBucket: process.env.FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: process.env.FIREBASE_MESSAGING_SENDER_ID,
+  appId: process.env.FIREBASE_APP_ID,
 };
 
 // Initialize Firebase
