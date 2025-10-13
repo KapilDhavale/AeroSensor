@@ -1,0 +1,41 @@
+# -----------------------
+# Node.js / Backend
+# -----------------------
+# Node modules
+backend/node_modules/
+
+# Logs
+backend/*.log
+backend/npm-debug.log*
+
+# Environment files
+backend/.env
+
+# Build output (if any)
+backend/dist/
+backend/build/
+
+# -----------------------
+# React / Frontend
+# -----------------------
+# Node modules
+frontend/node_modules/
+
+# React build output
+frontend/build/
+
+# Logs
+frontend/*.log
+frontend/npm-debug.log*
+
+# Environment files
+frontend/.env
+
+# -----------------------
+# OS / Misc
+# -----------------------
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
