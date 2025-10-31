@@ -1,0 +1,167 @@
+name: AeroSensor CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      rollback_commit_sha:
+        description: 'Commit SHA to deploy for rollback'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+  security-events: write
+  deployments: write
+  actions: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build_and_test:
+    name: Build, Test & Scan
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [18.x, 20.x]
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.rollback_commit_sha || github.ref }}
+
+      - name: Initialize CodeQL
+        if: github.event_name != 'pull_request' # Avoid duplicate scans on PRs if branch protection requires it
+        uses: github/codeql-action/init@v3
+        with:
+          languages: 'javascript'
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+
+      - name: Check for available scripts
+        id: check_scripts
+        run: |
+          if grep -q '"test":' package.json; then echo "test_script_exists=true" >> $GITHUB_OUTPUT; else echo "test_script_exists=false" >> $GITHUB_OUTPUT; fi
+          if grep -q '"build":' package.json; then echo "build_script_exists=true" >> $GITHUB_OUTPUT; else echo "build_script_exists=false" >> $GITHUB_OUTPUT; fi
+
+      - name: Install Dependencies with Retry
+        run: |
+          for i in 1 2 3; do
+            npm ci && break
+            echo "npm ci failed. Retrying in 15 seconds..."
+            sleep 15
+          done
+
+      - name: Run Security Audit (npm audit)
+        run: npm audit --audit-level=high
+
+      - name: Run Build Script
+        if: steps.check_scripts.outputs.build_script_exists == 'true'
+        run: npm run build --if-present
+
+      - name: Run Tests
+        if: steps.check_scripts.outputs.test_script_exists == 'true'
+        run: npm test
+
+      - name: Perform CodeQL Analysis
+        if: github.event_name != 'pull_request'
+        uses: github/codeql-action/analyze@v3
+
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: aerosensor-build-${{ matrix.node-version }}
+          path: |
+            .
+            !node_modules/
+          retention-days: 7
+
+  deploy:
+    name: Deploy to Production
+    needs: build_and_test
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && github.event.inputs.rollback_commit_sha != '')
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://aerosensor.example.com
+
+    steps:
+      - name: Create GitHub Deployment
+        id: deployment
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const ref = context.payload.inputs ? context.payload.inputs.rollback_commit_sha : context.sha;
+            const { data: deployment } = await github.rest.repos.createDeployment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: ref,
+              environment: 'production',
+              required_contexts: [],
+              auto_merge: false,
+              description: 'Deploying AeroSensor',
+              payload: {
+                initiator: context.actor
+              }
+            });
+            core.setOutput('deployment_id', deployment.id);
+            return deployment;
+
+      - name: Download Build Artifact (Node 20.x)
+        uses: actions/download-artifact@v4
+        with:
+          name: aerosensor-build-20.x
+          path: ./app
+
+      - name: Deploy Application
+        id: deploy_step
+        run: |
+          echo "Deploying AeroSensor artifact to production environment..."
+          # Placeholder for actual deployment command
+          # Example: scp -r ./app user@host:/var/www/aerosensor
+          # Example: aws s3 sync ./app s3://aerosensor-bucket
+          # For this example, we'll just simulate success.
+          sleep 10
+          echo "Deployment successful."
+
+      - name: Update Deployment Status (Success)
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.repos.createDeploymentStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              deployment_id: ${{ steps.deployment.outputs.deployment_id }},
+              state: 'success',
+              environment_url: 'https://aerosensor.example.com',
+              log_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
+            });
+
+      - name: Update Deployment Status (Failure)
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.repos.createDeploymentStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              deployment_id: ${{ steps.deployment.outputs.deployment_id }},
+              state: 'failure',
+              log_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
+            });
