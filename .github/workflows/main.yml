@@ -1,0 +1,216 @@
+```yaml
+name: AeroSensor CI/CD Pipeline
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  security_scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [ 'javascript' ]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          queries: +security-extended
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Dependencies for Audit
+        run: npm ci
+
+      - name: Run NPM Audit
+        run: npm audit --audit-level=high
+
+  ci:
+    name: Build & Test
+    needs: security_scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        node-version: [18, 20]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+
+      - name: Cache npm dependencies
+        id: cache-npm
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-node-${{ matrix.node-version }}-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-${{ matrix.node-version }}-
+
+      - name: Install Dependencies with Retry
+        uses: nick-invision/retry@v2
+        with:
+          timeout_seconds: 180
+          max_attempts: 3
+          command: npm ci
+
+      - name: Check for available scripts
+        id: check_scripts
+        run: |
+          if test -f package.json && grep -q '"test":' package.json; then
+            echo "test_script_exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "test_script_exists=false" >> $GITHUB_OUTPUT
+          fi
+          if test -f package.json && grep -q '"build":' package.json; then
+            echo "build_script_exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "build_script_exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run Tests
+        if: steps.check_scripts.outputs.test_script_exists == 'true'
+        run: npm test
+
+      - name: Run Build
+        if: steps.check_scripts.outputs.build_script_exists == 'true'
+        run: npm run build
+
+      - name: Upload Build Artifact
+        if: steps.check_scripts.outputs.build_script_exists == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifact-node-${{ matrix.node-version }}
+          path: |
+            dist/
+            build/
+          if-no-files-found: ignore
+
+  deploy:
+    name: Deploy to Production
+    needs: ci
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://aerosensor.example.com
+    permissions:
+      deployments: write
+    steps:
+      - name: Create Deployment Status (pending)
+        uses: bobheadxi/deployments@v1
+        id: deployment
+        with:
+          step: start
+          token: ${{ secrets.GITHUB_TOKEN }}
+          env: production
+
+      - name: Download Build Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifact-node-20 # Deploy artifact from the latest Node version
+          path: ./deploy-package
+
+      - name: Deploy
+        id: deploy_step
+        uses: nick-invision/retry@v2
+        with:
+          timeout_seconds: 300
+          max_attempts: 2
+          command: |
+            echo "Deploying files from ./deploy-package to production..."
+            ls -R ./deploy-package
+            echo "Deployment successful!"
+
+      - name: Update Deployment Status (success/failure)
+        uses: bobheadxi/deployments@v1
+        if: always()
+        with:
+          step: finish
+          token: ${{ secrets.GITHUB_TOKEN }}
+          status: ${{ job.status }}
+          deployment_id: ${{ steps.deployment.outputs.id }}
+          env_url: https://aerosensor.example.com
+
+  rollback:
+    name: Rollback Production
+    needs: deploy
+    if: failure() && github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      deployments: write
+      actions: read
+      contents: read
+    steps:
+      - name: Notify Team of Rollback
+        run: echo "::error::Deployment failed! Initiating automated rollback."
+
+      - name: Find last successful deployment artifact
+        id: find_artifact
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          workflow: ${{ github.workflow_id }}
+          branch: main
+          workflow_conclusion: success
+          name: build-artifact-node-20
+          path: ./rollback-package
+          if_no_artifact_found: fail
+
+      - name: Create Rollback Deployment Status
+        uses: bobheadxi/deployments@v1
+        id: deployment_rollback
+        with:
+          step: start
+          token: ${{ secrets.GITHUB_TOKEN }}
+          env: production-rollback
+
+      - name: Perform Rollback
+        run: |
+          echo "Rolling back to a previously successful version."
+          echo "Deploying artifact from run #${{ steps.find_artifact.outputs.run_id }}"
+          ls -R ./rollback-package
+          echo "Rollback complete."
+
+      - name: Update Rollback Deployment Status
+        uses: bobheadxi/deployments@v1
+        if: always()
+        with:
+          step: finish
+          token: ${{ secrets.GITHUB_TOKEN }}
+          status: ${{ job.status }}
+          deployment_id: ${{ steps.deployment_rollback.outputs.id }}
+          env_url: https://aerosensor.example.com
+```
