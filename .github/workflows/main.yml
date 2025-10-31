@@ -1,0 +1,213 @@
+```yaml
+# Robust CI/CD Pipeline for AeroSensor JavaScript Application
+#
+# Features:
+# - Triggers on push to main and pull requests.
+# - Matrix testing for multiple Node.js versions (18.x, 20.x).
+# - Dependency caching with fallback for speed.
+# - Retry logic for flaky operations like package installation.
+# - Conditional execution of test and build scripts.
+# - Comprehensive security scanning (CodeQL, TruffleHog secrets, npm audit).
+# - Build artifact management.
+# - Deployment job with status reporting to GitHub Environments.
+# - Placeholder for a rollback job on deployment failure.
+
+name: CI/CD Pipeline for AeroSensor
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+# Concurrency control ensures that only the latest commit for a branch/PR gets built.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Define permissions for the GITHUB_TOKEN for security best practices.
+permissions:
+  contents: read
+  security-events: write
+  deployments: write
+  pull-requests: write
+
+jobs:
+  # Job for comprehensive security scanning.
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Detect and scan for secrets
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: ${{ github.event.before }}
+          head: ${{ github.sha }}
+          extra_args: --debug --only-verified
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: 'javascript'
+          # See the CodeQL documentation for a full list of queries.
+          # https://codeql.github.com/docs/codeql-query-help/
+          queries: +security-and-quality
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+
+  # Job to build and test the application across different Node.js versions.
+  build_and_test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    needs: security
+    strategy:
+      matrix:
+        node-version: [18.x, 20.x]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Cache npm dependencies
+        id: cache-npm
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-node-${{ matrix.node-version }}-npm-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-${{ matrix.node-version }}-npm-
+
+      - name: Check for available package scripts
+        id: check_scripts
+        run: |
+          if jq -e '.scripts.test' package.json > /dev/null; then
+            echo "has_test=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_test=false" >> $GITHUB_OUTPUT
+          fi
+          if jq -e '.scripts.build' package.json > /dev/null; then
+            echo "has_build=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_build=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Install dependencies with retry
+        uses: nick-fields/retry@v3
+        with:
+          timeout_seconds: 600
+          max_attempts: 3
+          command: npm ci
+
+      - name: Scan for dependency vulnerabilities
+        run: npm audit --audit-level=high
+
+      - name: Run tests
+        if: steps.check_scripts.outputs.has_test == 'true'
+        run: npm test
+
+      - name: Run build
+        if: steps.check_scripts.outputs.has_build == 'true'
+        run: npm run build
+
+      - name: Upload build artifact
+        if: steps.check_scripts.outputs.has_build == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifact-${{ matrix.node-version }}
+          path: |
+            dist/
+            build/
+          if-no-files-found: ignore # Don't fail if build output dirs don't exist
+
+  # Job to deploy the application to a production environment.
+  deploy:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: build_and_test
+    # Only run this job on push events to the main branch.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    environment:
+      name: production
+      url: https://aerosensor.example.com # Replace with your actual deployment URL
+
+    steps:
+      - name: Create GitHub Deployment
+        id: deployment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: deployment } = await github.rest.repos.createDeployment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: context.ref,
+              environment: 'production',
+              required_contexts: [],
+              auto_merge: false,
+              description: 'Deploying AeroSensor to production'
+            });
+            core.setOutput('deployment_id', deployment.id);
+
+      - name: Download build artifact
+        # We assume the build from Node 20.x is the one we want to deploy.
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifact-20.x
+          path: ./deployment-package
+
+      - name: Deploy to target environment
+        run: |
+          echo "Starting deployment..."
+          # Add your deployment commands here.
+          # For example: scp -r ./deployment-package/* user@your-server:/var/www/aerosensor
+          echo "Deployment artifact content:"
+          ls -R ./deployment-package
+          echo "Deployment successful."
+        # This is a placeholder. A real deployment might fail.
+        # Set a "continue-on-error: true" if you want the status update step to run.
+
+      - name: Update deployment status
+        # This step runs even if the deployment step fails, ensuring status is always reported.
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.repos.createDeploymentStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              deployment_id: ${{ steps.deployment.outputs.deployment_id }},
+              state: '${{ job.status }}',
+              log_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              environment_url: 'https://aerosensor.example.com'
+            });
+
+  # Job to handle rollback in case of deployment failure.
+  rollback:
+    name: Rollback on Failure
+    runs-on: ubuntu-latest
+    needs: deploy
+    # Only run if the deploy job fails on a push to main.
+    if: failure() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Notify about failure
+        run: echo "Deployment failed. Initiating rollback procedures."
+
+      - name: Trigger Rollback
+        run: |
+          echo "Executing rollback script..."
+          # Add your rollback commands here.
+          # This could be checking out a previous git tag and re-running the deploy job,
+          # or calling an external API/webhook to trigger a rollback on your hosting platform.
+          # Example:
+          # curl -X POST -d '{"version": "previous"}' https://api.example.com/deploy/rollback
+          echo "Rollback placeholder executed."
+```
