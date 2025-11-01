@@ -1,0 +1,203 @@
+```yaml
+name: CI/CD Pipeline for AeroSensor
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'ID of the workflow run to rollback to'
+        required: true
+        type: string
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  deployments: write
+  actions: read
+  security-events: write
+
+jobs:
+  security_scan:
+    name: Security Scan
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: 'javascript-typescript'
+          queries: +security-extended
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+      
+      - name: Snyk Security Scan
+        uses: snyk/actions/node@master
+        continue-on-error: true
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --all-projects --fail-on=upgradable
+
+  build:
+    name: Build & Test
+    needs: [security_scan]
+    if: always() && (needs.security_scan.result == 'success' || needs.security_scan.result == 'skipped')
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [18.x, 20.x]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Cache Node.js modules
+        id: cache-npm
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-node-${{ matrix.node-version }}-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-${{ matrix.node-version }}-
+
+      - name: Read package.json
+        id: read-package
+        uses: juliangruber/read-file-action@v1
+        with:
+          path: ./package.json
+
+      - name: Install dependencies with retry
+        uses: nick-invision/retry@v3
+        with:
+          timeout_seconds: 120
+          max_attempts: 3
+          command: npm ci
+
+      - name: Run tests (if script exists)
+        if: contains(fromJson(steps.read-package.outputs.content).scripts, 'test')
+        run: npm test
+
+      - name: Run build (if script exists)
+        if: contains(fromJson(steps.read-package.outputs.content).scripts, 'build')
+        run: npm run build
+
+      - name: Upload build artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifact-node-${{ matrix.node-version }}
+          path: |
+            dist/
+            node_modules/
+            index.js
+            package.json
+            package-lock.json
+          retention-days: 7
+
+  deploy_production:
+    name: Deploy to Production
+    needs: build
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://aerosensor.example.com
+    steps:
+      - name: Create GitHub Deployment
+        id: deployment
+        uses: bobheadxi/deployments@v1
+        with:
+          step: start
+          token: ${{ secrets.GITHUB_TOKEN }}
+          env: production
+          ref: ${{ github.sha }}
+
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifact-node-20.x # Deploy artifact from the latest LTS node version
+          path: ./deploy
+
+      - name: Deploy to target environment with retry
+        uses: nick-invision/retry@v3
+        with:
+          timeout_seconds: 300
+          max_attempts: 3
+          command: |
+            echo "Deploying application from ./deploy directory..."
+            # Add your deployment script here
+            # Example: scp -r ./deploy user@host:/path/to/app
+            # Example: aws s3 sync ./deploy s3://my-bucket
+            echo "Deployment successful!"
+
+      - name: Update GitHub Deployment Status
+        uses: bobheadxi/deployments@v1
+        if: always()
+        with:
+          step: finish
+          token: ${{ secrets.GITHUB_TOKEN }}
+          status: ${{ job.status }}
+          deployment_id: ${{ steps.deployment.outputs.id }}
+          env_url: https://aerosensor.example.com
+
+  rollback:
+    name: Rollback Production
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+    steps:
+      - name: Create GitHub Deployment for Rollback
+        id: deployment
+        uses: bobheadxi/deployments@v1
+        with:
+          step: start
+          token: ${{ secrets.GITHUB_TOKEN }}
+          env: production
+          desc: 'Rolling back to run ${{ github.event.inputs.run_id }}'
+
+      - name: Download artifact from specified run
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          workflow: ${{ github.workflow }}
+          run_id: ${{ github.event.inputs.run_id }}
+          name: build-artifact-node-20.x
+          path: ./deploy
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Deploy rolled-back artifact
+        run: |
+          echo "Starting rollback deployment..."
+          # Add your deployment script here, same as the one in the deploy job
+          echo "Rollback deployment successful!"
+
+      - name: Update GitHub Deployment Status on Rollback
+        uses: bobheadxi/deployments@v1
+        if: always()
+        with:
+          step: finish
+          token: ${{ secrets.GITHUB_TOKEN }}
+          status: ${{ job.status }}
+          deployment_id: ${{ steps.deployment.outputs.id }}
+          env_url: https://aerosensor.example.com
+```
