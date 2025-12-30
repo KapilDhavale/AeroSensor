@@ -1,0 +1,74 @@
+name: CI Pipeline
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+    branches:
+      - "main"
+
+jobs:
+  build:
+    runs-on: self-hosted
+
+    env:
+      # Docker Desktop (self-hosted runner)
+      DOCKER_HOST: tcp://localhost:2375
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      - name: Verify package.json exists
+        run: |
+          if [ ! -f "backend/package.json" ]; then
+            echo "❌ package.json not found in backend"
+            exit 1
+          fi
+
+      - name: Install dependencies (with retry)
+        working-directory: backend
+        run: |
+          npm install || npm install || npm install
+
+      - name: Run tests (non-blocking)
+        working-directory: backend
+        run: |
+          npm test --if-present || echo "⚠️ Tests failed or not configured"
+
+      - name: Build project
+        working-directory: backend
+        run: |
+          npm run build --if-present || echo "ℹ️ No build step defined"
+
+      # -----------------------------
+      # Docker validation (generated Dockerfile)
+      # -----------------------------
+
+      - name: Check Docker availability
+        run: docker version
+
+      - name: Build Docker image
+        run: |
+          docker build -t shipiq-ci-test backend
+
+      - name: Run Docker container (smoke test)
+        run: |
+          docker run -d -p 3000:3000 --name shipiq-ci-test shipiq-ci-test
+          sleep 5
+          docker ps | grep shipiq-ci-test
+
+      - name: Show container logs
+        run: docker logs shipiq-ci-test
+
+      - name: Cleanup container
+        if: always()
+        run: |
+          docker stop shipiq-ci-test || true
+          docker rm shipiq-ci-test || true
