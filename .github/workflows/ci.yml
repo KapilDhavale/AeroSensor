@@ -1,0 +1,89 @@
+name: CI Pipeline (Docker Validation)
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+    branches:
+      - "main"
+
+jobs:
+  docker-validate:
+    runs-on: self-hosted
+    environment:
+      name: production
+
+    env:
+      DOCKER_HOST: tcp://localhost:2375
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      - name: Verify package.json exists
+        run: |
+          if (!(Test-Path "backend/package.json")) {
+            Write-Error "package.json not found in backend"
+            exit 1
+          }
+
+      - name: Install dependencies
+        working-directory: backend
+        run: npm install
+        continue-on-error: true
+
+      - name: Run tests (non-blocking)
+        working-directory: backend
+        run: npm test --if-present
+        continue-on-error: true
+
+      - name: Build project
+        working-directory: backend
+        run: npm run build --if-present
+        continue-on-error: true
+
+      - name: Verify Docker is reachable
+        run: docker info
+
+      - name: Validate PORT env
+        run: |
+          if (-not $Env:PORT) {
+            Write-Error "PORT is not defined in GitHub Environment secrets"
+            exit 1
+          }
+
+      - name: Build Docker image
+        run: |
+          docker build `
+            -f backend/Dockerfile `
+            -t ci-test:${{ github.sha }} `
+            .
+
+      - name: Stop existing test container
+        run: docker rm -f ci-test
+        continue-on-error: true
+
+      - name: Run Docker container (kept running)
+        run: |
+          docker run -d `
+            --name ci-test `
+            -p $Env:PORT:$Env:PORT `
+            -e PORT=$Env:PORT `
+            -e FIREBASE_API_KEY=${{ secrets.FIREBASE_API_KEY }} `
+            -e FIREBASE_AUTH_DOMAIN=${{ secrets.FIREBASE_AUTH_DOMAIN }} `
+            -e FIREBASE_DATABASE_URL=${{ secrets.FIREBASE_DATABASE_URL }} `
+            -e FIREBASE_PROJECT_ID=${{ secrets.FIREBASE_PROJECT_ID }} `
+            -e FIREBASE_STORAGE_BUCKET=${{ secrets.FIREBASE_STORAGE_BUCKET }} `
+            -e FIREBASE_MESSAGING_SENDER_ID=${{ secrets.FIREBASE_MESSAGING_SENDER_ID }} `
+            -e FIREBASE_APP_ID=${{ secrets.FIREBASE_APP_ID }} `
+            -e PORT=${{ secrets.PORT }} `
+            ci-test:${{ github.sha }}
+
+      - name: Show container logs
+        run: docker logs ci-test
